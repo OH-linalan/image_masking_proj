@@ -1,0 +1,335 @@
+#include <iostream>
+#include <string>
+#include <fstream>
+#include <Windows.h>
+#include <cstdio>
+#include <cstdint>
+#include <algorithm>
+using namespace std;
+struct size
+{
+    int width;
+    int height;
+};
+struct coord
+{
+    int x;
+    int y;
+};
+class matrix
+{
+public:
+    int row;
+    int colm;
+    double ** data;
+    matrix(int r, int c) : row(r), colm(c) {
+        data = new double*[row];
+        for (int i = 0; i < row; i++) {
+            data[i] = new double[colm];
+        }
+    }
+    matrix(int r, int c, double ** d) : row(r), colm(c), data(d) {}
+    matrix innerP(const matrix& other)
+    {
+        if (colm != other.row) {
+            throw invalid_argument("ERROR: invalid product!");
+        }
+        matrix result(row, other.colm);
+        for (int i = 0; i < row; i++) {
+            for (int j = 0; j < other.colm; j++) {
+                result.data[i][j] = 0;
+                for (int k = 0; k < colm; k++) {
+                    result.data[i][j] += data[i][k] * other.data[k][j];
+                }
+            }
+        }
+        return result;
+    }
+    matrix transpose()
+    {
+        matrix result(colm, row);
+        for (int i = 0; i < row; i++) {
+            for (int j = 0; j < colm; j++) {
+                result.data[j][i] = data[i][j];
+            }
+        }
+        return result;
+    }
+    //K의 역행렬, 특수한 경우로 일반적 역행렬에서 사용 금지 3x3
+    matrix Kinv()
+    {
+        double ** invdata = new double*[3];
+        for (int i = 0; i < 3; i++) {
+            invdata[i] = new double[3];
+        }
+        invdata[0][0] = 1/data[0][0];
+        invdata[0][1] = 0;
+        invdata[0][2] = -data[0][2]/data[0][0];
+        invdata[1][0] = 0;
+        invdata[1][1] = 1/data[1][1];
+        invdata[1][2] = -data[1][2]/data[1][1];
+        invdata[2][0] = 0;
+        invdata[2][1] = 0;
+        invdata[2][2] = 1;
+        return matrix(3, 3, invdata);
+    }
+    void print()
+    {
+        for (int i = 0; i < row; i++) {
+            for (int j = 0; j < colm; j++) {
+                cout << data[i][j] << " ";
+            }
+            cout << endl;
+        }
+    }
+    ~matrix() {
+        for (int i = 0; i < row; i++) {
+            delete[] data[i];
+        }
+        delete[] data;
+    }
+};
+struct calib
+{
+    matrix * K;
+    matrix * R;
+    matrix * T;
+};
+//좌표를 이미지 데이터 배열의 인덱스로 변환하는 함수
+int cordtoidx(const struct size& imgSize, const struct coord& c){
+        int temp = imgSize.height - 1 - c.y;
+        return (temp * imgSize.width + c.x) * 3;
+    }
+/**
+ * @brief BMP 파일을 로드하여 픽셀 데이터를 메모리에 할당합니다.
+ * * @param filename 로드할 BMP 파일의 경로
+ * @param[out] imgSize 로드된 이미지의 가로, 세로 크기가 저장될 구조체
+ * @param[out] bmpFHeader 파일 헤더 정보를 담을 구조체 포인터
+ * @param[out] bmpIHeader 정보 헤더 정보를 담을 구조체 포인터
+ * @return 성공 시 할당된 픽셀 데이터의 포인터(BYTE*), 실패 시 nullptr 반환
+ * @note 반환된 포인터는 사용 후 반드시 delete[]를 통해 메모리를 해제해야 합니다.
+ */
+BYTE * loadfile(const string filename, struct size& imgSize,BITMAPFILEHEADER* bmpFHeader, BITMAPINFOHEADER * bmpIHeader )
+{
+    printf("Loading file: %s\n", filename.c_str());
+    ifstream file(filename, ios::binary);
+    if (!file.is_open()) {
+        cerr << "Error opening file: " << filename << endl;
+        return nullptr;
+    }
+    file.read((char*)bmpFHeader, sizeof(BITMAPFILEHEADER));
+    file.read((char*)bmpIHeader, sizeof(BITMAPINFOHEADER));
+    if(bmpFHeader->bfType != 0x4D42) {
+        cerr << "Not a valid BMP file: " << filename << endl;
+        return nullptr;
+    }
+    imgSize.width = bmpIHeader->biWidth;
+    imgSize.height = bmpIHeader->biHeight;
+    printf("Width: %d, Height: %d\n", imgSize.width, imgSize.height);
+    uint32_t dataSize = bmpIHeader->biSizeImage;
+    if (dataSize == 0) {
+        dataSize = imgSize.width * imgSize.height * (bmpIHeader->biBitCount / 8);
+    }
+    file.seekg(bmpFHeader->bfOffBits, std::ios::beg);
+    BYTE* imgData = new BYTE[dataSize];
+    file.read((char*)imgData, dataSize);
+    file.close();
+    return imgData;
+}
+/**
+ * @brief 메모리에 있는 이미지 데이터를 BMP 파일로 저장합니다.
+ * * @param filename 저장할 파일의 이름 (경로 포함)
+ * @param imgSize 이미지의 가로, 세로 크기 정보
+ * @param bmpFHeader 파일에 기록할 BITMAPFILEHEADER 구조체
+ * @param bmpIHeader 파일에 기록할 BITMAPINFOHEADER 구조체
+ * @param imgData 파일에 쓸 픽셀 데이터 배열의 포인터
+ * @return void
+ * * @details 
+ * 제공된 헤더 정보를 바탕으로 BMP 파일을 생성합니다. 
+ */
+void savefile(const string filename, const struct size imgSize, const BITMAPFILEHEADER bmpFHeader, const BITMAPINFOHEADER bmpIHeader, const BYTE* imgData)
+{
+    ofstream file(filename, ios::binary);
+    if (!file.is_open()) {
+        cerr << "Error opening file for writing: " << filename << endl;
+        return;
+    }
+    file.write((char*)&bmpFHeader, sizeof(BITMAPFILEHEADER));
+    file.write((char*)&bmpIHeader, sizeof(BITMAPINFOHEADER));
+    file.seekp(bmpFHeader.bfOffBits, std::ios::beg);
+    uint32_t dataSize = bmpIHeader.biSizeImage;
+    if (dataSize == 0) {
+        dataSize = imgSize.width * imgSize.height * (bmpIHeader.biBitCount / 8);
+    }
+    file.write((char*)imgData, dataSize);
+    file.close();
+}
+/**
+ * @brief 사각형 영역을 지정하여 마스킹을 위한 이미지 마스크 데이터를 생성합니다.
+ * 
+ * @param imgSize       대상 이미지의 해상도 정보 (가로, 세로 크기)
+ * @param maskingCords  사각형의 꼭짓점 좌표 배열 (순서: [0]=ul, [1]=ur, [2]=dl, [3]=dr)
+ * 
+ * @return BYTE*        동적 할당된 마스크 데이터 바이트 배열 포인터 
+ *                      (사용 후 반드시 delete[]로 메모리를 해제해야 합니다.)
+ * @see masking
+ */
+BYTE * makeQuadMask(struct size imgSize, const coord * maskingCords)
+{
+    BYTE * maskdata = new BYTE[imgSize.width * imgSize.height * 3];
+    fill(maskdata, maskdata + imgSize.width * imgSize.height * 3, 255);
+    //ul, ur, dl, dr
+    for (int i = maskingCords[0].y; i < maskingCords[3].y; i++)
+    {
+        for (int j = maskingCords[0].x; j < maskingCords[3].x; j++)
+        {
+            int idx = cordtoidx(imgSize, {j, i});
+            maskdata[idx] = 0;
+            maskdata[idx + 1] = 0;
+            maskdata[idx + 2] = 0;
+        }
+    }
+    return maskdata;
+}
+/**
+ * @brief 원본 이미지 데이터와 마스크 데이터를 비트 연산으로 결합하여 마스킹을 수행합니다.
+ * 
+ * @param source    원본 이미지의 픽셀 바이트 배열 포인터
+ * @param mask      makeQuadMask 등을 통해 생성된 마스크 데이터 바이트 배열 포인터
+ * @param imgSize   이미지의 해상도 정보 (가로, 세로 크기)
+ * 
+ * @return BYTE*    마스킹 처리가 완료된 새로운 이미지의 동적 할당된 바이트 배열 포인터
+ *                  (사용 후 반드시 delete[]로 메모리를 해제해야 합니다.)
+ * 
+ * @note mask 배열의 배경은 255, 가릴 영역은 0으로 채워져 있어야 원본이 왜곡되지 않습니다.
+ * @see makeQuadMask
+ */
+BYTE * masking(const BYTE * source, const BYTE * mask, struct size imgSize)
+{
+    BYTE * ret = new BYTE[imgSize.width * imgSize.height * 3];
+    for(int i = 0; i < imgSize.width * imgSize.height * 3; i++)
+    {
+        ret[i] = source[i] & mask[i];
+    }
+    return ret;
+}
+struct calib Loadcalib(const string filename)
+{
+    ifstream file(filename);
+    if (!file.is_open()) {
+        cerr << "Error opening matrix file: " << filename << endl;
+        return calib{nullptr, nullptr, nullptr};
+    }
+    double ** Kdata = new double*[3];
+    for (int i = 0; i < 3; i++) {
+        Kdata[i] = new double[3];
+    }
+    double ** Rdata = new double*[3];
+    for (int i = 0; i < 3; i++) {
+        Rdata[i] = new double[3];
+    }
+    double ** Tdata = new double*[3];
+    for (int i = 0; i < 3; i++) {   
+        Tdata[i] = new double[1];
+    }
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            file >> Kdata[i][j];
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            file >> Rdata[i][j];
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        file >> Tdata[i][0];
+    }
+    file.close();
+    matrix * K = new matrix(3, 3, Kdata);
+    matrix * R = new matrix(3, 3, Rdata);
+    matrix * T = new matrix(3, 1, Tdata);
+    return calib{K, R, T};
+}
+matrix findH(calib c, calib c2)
+{
+    matrix Rdiff = c2.R->innerP(c.R->transpose());
+    matrix H = c.K->innerP(Rdiff).innerP(c.K->Kinv());
+    return H;
+}
+coord * homography(matrix H, const coord * c){
+    coord * ret = new coord[4];
+    for (int i = 0; i < 4; i++) {
+        matrix point(3, 1);
+        point.data[0][0] = c[i].x;
+        point.data[1][0] = c[i].y;
+        point.data[2][0] = 1;
+        matrix project = H.innerP(point);
+        double temp = project.data[2][0];
+        if(temp != 0) {
+            ret[i].x = project.data[0][0] / temp;
+            ret[i].y = project.data[1][0] / temp;
+        } else {
+            ret[i].x = c[i].x;
+            ret[i].y = c[i].y;
+        }
+    }
+    return ret;
+}
+int main() {
+    //first.bmp 로드
+    struct size fimgSize;
+    BITMAPFILEHEADER fbmpFHeader;
+    BITMAPINFOHEADER fbmpIHeader;
+    auto fimgData = loadfile("input/first.bmp", fimgSize, &fbmpFHeader, &fbmpIHeader);
+
+    struct size simgSize;
+    BITMAPFILEHEADER sbmpFHeader;
+    BITMAPINFOHEADER sbmpIHeader;
+    auto simgData = loadfile("input/second.bmp", simgSize, &sbmpFHeader, &sbmpIHeader);
+    
+    //마스킹 좌표 설정, 마스크 데이터 생성
+    coord maskingCoord[4] = {{514, 163}, {733, 163}, {514, 421}, {733, 421}};
+    auto maskData = makeQuadMask(fimgSize, maskingCoord);
+
+    //마스킹 수행
+    auto fmaskedData = masking(fimgData, maskData, fimgSize);
+
+    //output 폴더에 foutput.bmp로 저장
+    savefile("output/first_masked_output.bmp", fimgSize, fbmpFHeader, fbmpIHeader, fmaskedData);
+
+    auto sfmaskedData = masking(simgData, maskData, simgSize);
+    savefile("output/second_masked_output_firstdata.bmp", simgSize, sbmpFHeader, sbmpIHeader, sfmaskedData);
+
+    //호모그래피 계산
+    auto fdata = Loadcalib("input/firstdata.txt");
+    auto sdata = Loadcalib("input/seconddata.txt");
+    auto H = findH(fdata, sdata);
+    cout << "homography matrix:" << endl;
+    H.print();
+
+    //호모그래피 행렬을 마스킹 좌표에 적용
+    coord * homographyCords = homography(H, maskingCoord);
+    cout << "original coordinates:" << endl;
+    for (int i = 0; i < 4; i++) {
+        cout << "x: " << maskingCoord[i].x << ", y: " << maskingCoord[i].y << endl;
+    }
+    cout << "homography coordinates:" << endl;
+    for (int i = 0; i < 4; i++) {
+        cout << "x: " << homographyCords[i].x << ", y: " << homographyCords[i].y << endl;
+    }
+
+    //변환된 좌표를 이용하여 두 번째 이미지에 마스킹 적용    
+    auto smaskData = makeQuadMask(simgSize, homographyCords);
+    auto smaskedData = masking(simgData, smaskData, simgSize);
+
+    //output 폴더에 soutput.bmp로 저장
+    savefile("output/second_masked_output_homography.bmp", simgSize, sbmpFHeader, sbmpIHeader, smaskedData);
+
+    delete[] fimgData;
+    delete[] simgData;
+    delete[] maskData;
+    delete[] fmaskedData;
+    delete[] homographyCords;
+    return 0;
+}
