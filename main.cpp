@@ -8,6 +8,7 @@
 #include <opencv2/opencv.hpp>
 #include <vector>
 #include <tuple>
+#include <chrono>
 using namespace std;
 using namespace cv;
 struct size
@@ -104,6 +105,13 @@ struct orbData
     vector<KeyPoint> prevKeypoint;
     vector<KeyPoint> nextKeypoint;
     vector<vector<DMatch>> matches;
+};
+struct cvHomographyResult
+{
+    Mat H;
+    vector<Point2f> prevKeypoints;
+    vector<Point2f> nextKeypoints;
+    vector<DMatch> acceptMatch;
 };
 //좌표를 이미지 데이터 배열의 인덱스로 변환하는 함수
 int cordtoidx(const struct size& imgSize, const struct coord& c){
@@ -308,7 +316,33 @@ struct orbData cvORB(const Mat& prev, const Mat& next)
     matcher->knnMatch(prevDesc, nextDesc, matches, 2);
     return orbData{prevKeypoints, nextKeypoints, matches};
 }
+struct cvHomographyResult cvHomography(const orbData& data, double ratio)
+{
+    //Lowe's ratio test
+    vector<DMatch> acceptMatch;
+    for(const auto& m : data.matches)
+    {
+        if(m[0].distance< ratio * m[1].distance)
+        {
+            acceptMatch.push_back(m[0]);
+        }
+    }
+    vector<Point2f> prevKeypoints, nextKeypoints;
+    for(const auto& m : acceptMatch)
+    {
+        prevKeypoints.push_back(data.prevKeypoint[m.queryIdx].pt);
+        nextKeypoints.push_back(data.nextKeypoint[m.trainIdx].pt);
+    }
+    Mat H = findHomography(prevKeypoints, nextKeypoints, RANSAC);
+    cout << "Number of accepted matches: " << acceptMatch.size() << endl;
+    cout << "Homography matrix:" << endl;
+    cout << H << endl;
+    return cvHomographyResult{H, prevKeypoints, nextKeypoints, acceptMatch};
+}
 int main() {
+    //시작 시간
+    auto start = chrono::high_resolution_clock::now();
+
     //first.bmp 로드
     struct size fimgSize;
     BITMAPFILEHEADER fbmpFHeader;
@@ -372,6 +406,54 @@ int main() {
     drawMatches(firstCV, orbResult.prevKeypoint, secondCV, orbResult.nextKeypoint, orbResult.matches, matchImg);
     imwrite("output/ORB_matches.png", matchImg);
 
+    auto HcvResult = cvHomography(orbResult, 0.75);
+    //ratio test를 적용하여 accept된 매칭을 시각화
+    Mat acceptMatchImg;
+    drawMatches(firstCV, orbResult.prevKeypoint, secondCV, orbResult.nextKeypoint, HcvResult.acceptMatch, acceptMatchImg);
+    imwrite("output/ORB_accepted_matches.png", acceptMatchImg);
+
+    auto Hcv = HcvResult.H;
+    double ** HcvData;
+    HcvData = new double*[Hcv.rows];
+        for (int i = 0; i < Hcv.rows; i++) {
+            HcvData[i] = new double[Hcv.cols];
+            for (int j = 0; j < Hcv.cols; j++) {
+                HcvData[i][j] = Hcv.at<double>(i, j);
+            }
+        }
+    matrix HcvM(Hcv.rows, Hcv.cols, HcvData);
+
+    //호모그래피 행렬을 마스킹 좌표에 적용
+    coord * homographyCordsCV = homography(HcvM, maskingCoord);
+    cout << "original coordinates:" << endl;
+    for (int i = 0; i < 4; i++) {
+        cout << "x: " << maskingCoord[i].x << ", y: " << maskingCoord[i].y << endl;
+    }
+    cout << "homography coordinates:" << endl;
+    for (int i = 0; i < 4; i++) {
+        cout << "x: " << homographyCordsCV[i].x << ", y: " << homographyCordsCV[i].y << endl;
+    }
+
+    //변환된 좌표를 이용하여 두 번째 이미지에 마스킹 적용    
+    auto smaskDataCV = makeQuadMask(simgSize, homographyCordsCV);
+    auto smaskedDataCV = masking(simgData, smaskDataCV, simgSize);
+
+    //output 폴더에 soutput.bmp로 저장
+    savefile("output/second_masked_output_homography_opencv.bmp", simgSize, sbmpFHeader, sbmpIHeader, smaskedDataCV);
+
+    //output/second_masked_output_homography.bmp와 output/second_masked_output_homography_opencv.bmp의 차이점 분석
+    Mat homographyOutput = imread("output/second_masked_output_homography.bmp");
+    Mat homographyOutputCV = imread("output/second_masked_output_homography_opencv.bmp");
+    Mat diff;
+    absdiff(homographyOutput, homographyOutputCV, diff);
+    imwrite("output/homography_difference.png", diff);
+    cout << "Diff : " << sum(diff) << endl;
+
+    //종료 시간
+    auto end = chrono::high_resolution_clock::now();
+    auto duration = chrono::duration_cast<chrono::milliseconds>(end - start);
+    cout << "Execution time: " << duration.count() << " ms" <<" = "<< duration.count()/1000.0 << " s" << endl;
+
     delete[] fimgData;
     delete[] simgData;
     delete[] maskData;
@@ -380,5 +462,6 @@ int main() {
     delete[] sfmaskedData;
     delete[] smaskData;
     delete[] smaskedData;
+    delete[] homographyCordsCV;
     return 0;
 }
