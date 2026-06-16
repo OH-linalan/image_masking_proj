@@ -1,4 +1,5 @@
 {
     "C_Cpp.default.configurationProvider": "msvc",
-    "vcpkg.enabled": true
+    "vcpkg.enabled": true,
+    "cmake.ignoreCMakeListsMissing": true
 }

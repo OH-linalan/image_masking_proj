@@ -339,6 +339,43 @@ struct cvHomographyResult cvHomography(const orbData& data, double ratio)
     cout << H << endl;
     return cvHomographyResult{H, prevKeypoints, nextKeypoints, acceptMatch};
 }
+double rmse(Mat img1, Mat img2)
+{
+    Mat diff;
+    absdiff(img1, img2, diff);
+    diff.convertTo(diff, CV_32F);
+    Mat sq = diff.mul(diff);
+    Scalar sum = cv::sum(sq);
+    double total = sum[0] + sum[1] + sum[2];
+    double elem = img1.rows * img1.cols * img1.channels();
+    return sqrt(total / elem);
+}
+double iou(coord * c1, coord * c2)
+{
+    //마스크의 좌표를 이용하여 사각형 영역 계산
+    int c1_xmin = min({c1[0].x, c1[1].x, c1[2].x, c1[3].x});
+    int c1_xmax = max({c1[0].x, c1[1].x, c1[2].x, c1[3].x});
+    int c1_ymin = min({c1[0].y, c1[1].y, c1[2].y, c1[3].y});
+    int c1_ymax = max({c1[0].y, c1[1].y, c1[2].y, c1[3].y});
+
+    int c2_xmin = min({c2[0].x, c2[1].x, c2[2].x, c2[3].x});
+    int c2_xmax = max({c2[0].x, c2[1].x, c2[2].x, c2[3].x});
+    int c2_ymin = min({c2[0].y, c2[1].y, c2[2].y, c2[3].y});
+    int c2_ymax = max({c2[0].y, c2[1].y, c2[2].y, c2[3].y});
+    //사각형 영역을 계산
+    Rect c1_r(c1_xmin, c1_ymin, c1_xmax - c1_xmin, c1_ymax - c1_ymin);
+    Rect c2_r(c2_xmin, c2_ymin, c2_xmax - c2_xmin, c2_ymax - c2_ymin);
+    //교집합 영역 계산
+    Rect inter = c1_r & c2_r;
+    double interArea = inter.area();
+    //합집합 영역 계산
+    double unionArea = c1_r.area() + c2_r.area() - interArea;
+    //에러처리
+    if (unionArea == 0) {
+        return 0.0;
+    }
+    return interArea / unionArea;
+}
 int main() {
     //시작 시간
     auto start = chrono::high_resolution_clock::now();
@@ -448,6 +485,65 @@ int main() {
     absdiff(homographyOutput, homographyOutputCV, diff);
     imwrite("output/homography_difference.png", diff);
     cout << "Diff : " << sum(diff) << endl;
+
+    //-----------------specification-------------------
+    //matrix class H를 OpenCV의 Mat으로 변환
+    Mat Hcam = Mat::zeros(fdata.K->row, fdata.K->colm, CV_64FC1);
+    {
+        matrix H_temp = findH(fdata, sdata);
+        for (int i = 0; i < H_temp.row; i++) {
+            for (int j = 0; j < H_temp.colm; j++) {
+                Hcam.at<double>(i, j) = H_temp.data[i][j];
+            }
+        }
+    }
+    //first.bmp를 Hcam으로 워핑
+    Mat firstWarp_Hcam;
+    warpPerspective(firstCV, firstWarp_Hcam, Hcam, firstCV.size());
+    //워핑된 이미지의 그레이스케일을 구함
+    Mat gray, thresh;
+    cvtColor(firstWarp_Hcam, gray, COLOR_BGR2GRAY);
+    threshold(gray, thresh, 1, 255, THRESH_BINARY);
+    //보정할 영역을 찾아서 crop & resize
+    Rect roi = boundingRect(thresh);
+    Mat cropped = firstWarp_Hcam(roi);
+    Mat firstWarp_Hcam_resized;
+    resize(cropped, firstWarp_Hcam_resized, firstCV.size(),0,0,INTER_LINEAR);
+    imwrite("output/first_warped_Hcam.bmp", firstWarp_Hcam_resized);
+    //first.bmp를 Hcv로 워핑
+    Mat firstWarp_Hcv;
+    warpPerspective(firstCV, firstWarp_Hcv, Hcv, firstCV.size());
+    //워핑된 이미지의 그레이스케일을 구함
+    cvtColor(firstWarp_Hcv, gray, COLOR_BGR2GRAY);
+    threshold(gray, thresh, 1, 255, THRESH_BINARY);
+    //보정할 영역을 찾아서 crop & resize
+    roi = boundingRect(thresh);
+    cropped = firstWarp_Hcv(roi);
+    Mat firstWarp_Hcv_resized;
+    resize(cropped, firstWarp_Hcv_resized, firstCV.size(),0,0,INTER_LINEAR);
+    imwrite("output/first_warped_Hcv.bmp", firstWarp_Hcv_resized);
+    //카메라 파라미터 호모그래피의 역행렬을 구하고 전체 호모그래피와 곱하여 객체의 움직임 호모그래피를 분리함
+    Mat Hcam_inv;
+    auto flag = invert(Hcam, Hcam_inv, DECOMP_LU);
+    if (flag) {
+        cout << "Inversion successful." << endl;
+    } 
+    else {
+        cout << "Inversion failed." << endl;
+    }
+    Mat Hobj = Hcam_inv * Hcv;
+    //Hobj가 단위 행렬에 가까운지 확인하여 어느 호모그래피가 더 정확한지 판단
+    Mat I = Mat::eye(Hobj.rows, Hobj.cols, CV_64FC1);
+    Mat Idiff;
+    absdiff(Hobj, I, Idiff);
+    double error = sum(Idiff)[0];
+    double threshold = 1e-3;
+    //error가 threshold보다 작으면 Hcam이 더 정확하다고 판단하여 Hcam으로 워핑한 이미지를 결과로 사용, 
+    //그렇지 않으면 Hcv로 워핑한 이미지를 결과로 사용
+    Mat comp_result = (error < threshold) ? firstWarp_Hcam_resized : firstWarp_Hcv_resized;
+
+    cout << "RMSE between images: "<< rmse(comp_result, secondCV) << endl;
+    cout << "IOU between masks: " << iou(homographyCords, homographyCordsCV) << endl;
 
     //종료 시간
     auto end = chrono::high_resolution_clock::now();
