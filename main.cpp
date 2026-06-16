@@ -5,7 +5,11 @@
 #include <cstdio>
 #include <cstdint>
 #include <algorithm>
+#include <opencv2/opencv.hpp>
+#include <vector>
+#include <tuple>
 using namespace std;
+using namespace cv;
 struct size
 {
     int width;
@@ -94,6 +98,12 @@ struct calib
     matrix * K;
     matrix * R;
     matrix * T;
+};
+struct orbData
+{
+    vector<KeyPoint> prevKeypoint;
+    vector<KeyPoint> nextKeypoint;
+    vector<vector<DMatch>> matches;
 };
 //좌표를 이미지 데이터 배열의 인덱스로 변환하는 함수
 int cordtoidx(const struct size& imgSize, const struct coord& c){
@@ -276,6 +286,28 @@ coord * homography(matrix H, const coord * c){
     }
     return ret;
 }
+Mat LoadCV(const string filename)
+{
+    Mat img = imread(filename);
+    if(img.empty())
+    {
+        std::cout<<"Can't find image" << std::endl;
+        return Mat();
+    }
+    return img;
+}
+struct orbData cvORB(const Mat& prev, const Mat& next)
+{
+    Ptr<FeatureDetector> detector = ORB::create();
+    vector<KeyPoint> prevKeypoints, nextKeypoints;
+    Mat prevDesc, nextDesc;
+    detector->detectAndCompute(prev, noArray(), prevKeypoints, prevDesc);
+    detector->detectAndCompute(next, noArray(), nextKeypoints, nextDesc);
+    Ptr<DescriptorMatcher> matcher = BFMatcher::create(NORM_HAMMING);
+    vector<vector<DMatch>> matches;
+    matcher->knnMatch(prevDesc, nextDesc, matches, 2);
+    return orbData{prevKeypoints, nextKeypoints, matches};
+}
 int main() {
     //first.bmp 로드
     struct size fimgSize;
@@ -326,10 +358,27 @@ int main() {
     //output 폴더에 soutput.bmp로 저장
     savefile("output/second_masked_output_homography.bmp", simgSize, sbmpFHeader, sbmpIHeader, smaskedData);
 
+    //------------------------OPENCV------------------------
+    //OpenCV로 이미지 로드
+    auto firstCV = LoadCV("input/first.bmp");
+    auto secondCV = LoadCV("input/second.bmp");
+    //ORB 특징점 검출 및 매칭
+    auto orbResult = cvORB(firstCV, secondCV);
+    cout << "Number of keypoints in first image: " << orbResult.prevKeypoint.size() << endl;
+    cout << "Number of keypoints in second image: " << orbResult.nextKeypoint.size() << endl;
+    cout << "Number of matches: " << orbResult.matches.size() << endl;
+    //매칭 결과 시각화
+    Mat matchImg;
+    drawMatches(firstCV, orbResult.prevKeypoint, secondCV, orbResult.nextKeypoint, orbResult.matches, matchImg);
+    imwrite("output/ORB_matches.png", matchImg);
+
     delete[] fimgData;
     delete[] simgData;
     delete[] maskData;
     delete[] fmaskedData;
     delete[] homographyCords;
+    delete[] sfmaskedData;
+    delete[] smaskData;
+    delete[] smaskedData;
     return 0;
 }

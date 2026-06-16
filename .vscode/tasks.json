@@ -1,0 +1,36 @@
+{
+    "tasks": [
+        {
+            "type": "cppbuild",
+            "label": "C/C++: g++ OpenCV 프로젝트 빌드",
+            "command": "g++",
+            "args": [
+                "-g",
+                "-std=c++17",
+                // 1. 로컬 헤더 파일 위치 주입 (-I)
+                "-I", "${workspaceFolder}/vcpkg_installed/x64-windows/include",
+                "${file}",
+                "-o", "${fileDirname}\\${fileBasenameNoExtension}.exe",
+                // 2. 로컬 라이브러리 파일 위치 주입 (-L)
+                "-L", "${workspaceFolder}/vcpkg_installed/x64-windows/lib",
+                // 3. 링크할 OpenCV 바이너리 명시 (-l)
+                // vcpkg는 보통 모듈별로 쪼개서 빌드하므로 아래 4개 핵심 핵심 모듈을 링크합니다.
+                "-l", "opencv_core4100",
+                "-l", "opencv_imgproc4100",
+                "-l", "opencv_features2d4100",
+                "-l", "opencv_calib3d4100"
+            ],
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ],
+    "version": "2.0.0"
+}

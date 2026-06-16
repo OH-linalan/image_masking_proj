@@ -1,5 +1,5 @@
-# Created by https://www.toptal.com/developers/gitignore/api/c++,cmake
-# Edit at https://www.toptal.com/developers/gitignore?templates=c++,cmake
+# Created by https://www.toptal.com/developers/gitignore/api/visualstudiocode,opencv,vcpkg,c++
+# Edit at https://www.toptal.com/developers/gitignore?templates=visualstudiocode,opencv,vcpkg,c++
 
 ### C++ ###
 # Prerequisites
@@ -35,24 +35,41 @@
 *.out
 *.app
 
-### CMake ###
-CMakeLists.txt.user
-CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Testing
-Makefile
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-_deps
+### OpenCV ###
+#OpenCV for Mac and Linux
+#build and release folders
+*/CMakeFiles
+*/CMakeCache.txt
+*/Makefile
+*/cmake_install.cmake
+.DS_Store
 
-### CMake Patch ###
-CMakeUserPresets.json
+### vcpkg ###
+# Vcpkg
 
-# External projects
-*-prefix/
+vcpkg-manifest-install.log
 
-# End of https://www.toptal.com/developers/gitignore/api/c++,cmake
+## Manifest Mode
+vcpkg_installed/
+
+### VisualStudioCode ###
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+
+# Local History for Visual Studio Code
+.history/
+
+# Built Visual Studio Code Extensions
+*.vsix
+
+### VisualStudioCode Patch ###
+# Ignore all local history of files
+.history
+.ionide
+
+# End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,opencv,vcpkg,c++
 PTZ-Calib-Datasets/
