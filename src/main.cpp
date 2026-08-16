@@ -44,14 +44,16 @@ bool compareNatural(const fs::path& a, const fs::path& b) {
 }
 
 void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pairIdx) {
-    struct CoreTypes::ImgSize fimgSize, simgSize;
+    struct CoreTypes::ImgSize fimgSize = {0, 0}, simgSize = {0, 0};
     uint8_t *fmaskedData = nullptr, *smaskedData = nullptr, *smaskedDataCV = nullptr;
     uint8_t* final_smaskedData = nullptr;
     Mat comp_result, secondCV;
     vector<vector<CoreTypes::coord>> homographyCords, homographyCordsCV;
-    string chosen_h_name;
+    string chosen_h_name = "Hcv";
     double diff_threshold = 1e-3;
     double error = 0.0;
+    double rmse_val = 0.0;
+    double iou_val = 0.0;
 
     {
         timer t("Total Execution Time (Pair " + to_string(pairIdx) + ")");
@@ -66,7 +68,7 @@ void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pai
         auto simgData = BmpIO::loadfile(secondFrame.imgPath.c_str(), simgSize, &sbmpFHeader, &sbmpIHeader);
         
         //마스킹 좌표 설정, 마스크 데이터 생성
-        auto maskingCoord = Operator::loadcord();
+        auto maskingCoord = Operator::loadcord(firstFrame.boxPath);
         auto maskData = Operator::makeQuadMask(fimgSize, maskingCoord);
 
         //마스킹 수행
@@ -180,22 +182,37 @@ void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pai
         comp_result = (error < diff_threshold) ? firstWarp_Hcam_resized : firstWarp_Hcv_resized;
         g_logger.log(LogLevel::DEBUG, "chosen homography: " + string((error < diff_threshold) ? "Hcam" : "Hcv"));
 
-        g_logger.log(LogLevel::DEBUG, "RMSE between images: " + to_string(Spec::rmse(comp_result, secondCV)));
-        g_logger.log(LogLevel::DEBUG, "IOU between masks: " + to_string(Spec::iou(homographyCords, homographyCordsCV)));
+        rmse_val = Spec::rmse(comp_result, secondCV);
+        iou_val = Spec::iou(homographyCords, homographyCordsCV);
+
+        g_logger.log(LogLevel::DEBUG, "RMSE between images: " + to_string(rmse_val));
+        g_logger.log(LogLevel::DEBUG, "IOU between masks: " + to_string(iou_val));
 
         final_smaskedData = (error < diff_threshold) ? smaskedData : smaskedDataCV;
         chosen_h_name = (error < diff_threshold) ? "Hcam" : "Hcv";
-        Mat outResultCam = Mat(simgSize.height, simgSize.width, CV_8UC3, final_smaskedData).clone();
-        flip(outResultCam, outResultCam, 0);
-        string resultCamPath = "output/result_cam/masked_" + secondFrame.stemName + ".jpg";
-        imwrite(resultCamPath, outResultCam);
+
+        if (final_smaskedData != nullptr && simgSize.width > 0 && simgSize.height > 0) {
+            Mat outResultCam = Mat(simgSize.height, simgSize.width, CV_8UC3, final_smaskedData).clone();
+            flip(outResultCam, outResultCam, 0);
+            string resultCamPath = "output/result_cam/masked_" + secondFrame.stemName + ".jpg";
+            imwrite(resultCamPath, outResultCam);
+        }
     }
 
     // ----------------- Image processing-----------------
+    if (!fmaskedData || !final_smaskedData || fimgSize.width <= 0 || simgSize.width <= 0) {
+        return;
+    }
+
     Mat fMaskedMat = Mat(fimgSize.height, fimgSize.width, CV_8UC3, fmaskedData).clone();
     Mat sMaskedMat = Mat(simgSize.height, simgSize.width, CV_8UC3, final_smaskedData).clone();
     flip(fMaskedMat, fMaskedMat, 0);
     flip(sMaskedMat, sMaskedMat, 0);
+
+    if (fMaskedMat.rows != sMaskedMat.rows) {
+        resize(sMaskedMat, sMaskedMat, Size(sMaskedMat.cols, fMaskedMat.rows));
+    }
+
     Mat combined;
     hconcat(fMaskedMat, sMaskedMat, combined);
     
@@ -204,8 +221,7 @@ void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pai
     int bottom_padding = 50;
     Mat canvas;
     copyMakeBorder(combined, canvas, top_padding, bottom_padding, 0, 0, BORDER_CONSTANT, Scalar(30, 30, 30));
-    double rmse_val = Spec::rmse(comp_result, secondCV);
-    double iou_val = Spec::iou(homographyCords, homographyCordsCV);
+
     char top_metric_text[256];
     snprintf(top_metric_text, sizeof(top_metric_text), 
              "[%s -> %s] RMSE: %.4f | IOU: %.4f | Selected: %s", 

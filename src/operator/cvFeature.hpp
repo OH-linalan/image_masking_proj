@@ -23,5 +23,6 @@ struct cvHomographyResult
 };
 Mat LoadCV(const string filename);
 struct orbData cvORB(const Mat& prev, const Mat& next);
+struct orbData LocalORB(const Mat& prev, const Mat& next);
 struct cvHomographyResult cvHomography(const orbData& data, double ratio);
 }

@@ -4,12 +4,12 @@ using namespace std;
 
 namespace Operator
 {
-    vector<vector<CoreTypes::coord>> loadcord()
+    vector<vector<CoreTypes::coord>> loadcord(const string& filepath)
     {
         timer t("masking: loadcord method");
-        ifstream file("input/detected_boxes.txt");
+        ifstream file(filepath);
         if (!file.is_open()) {
-            cerr << "Error opening cord file: cord.txt" << endl;
+            cerr << "Error opening cord file: " << filepath << endl;
             return {};
         }
         int n;
