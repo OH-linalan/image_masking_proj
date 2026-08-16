@@ -13,7 +13,6 @@ Mat LoadCV(const string filename)
     }
     return img;
 }
-
 struct orbData cvORB(const Mat& prev, const Mat& next)
 {
     timer k("cvFeature: cvORB method");
@@ -21,7 +20,7 @@ struct orbData cvORB(const Mat& prev, const Mat& next)
     Mat prevDesc, nextDesc;
     vector<vector<DMatch>> matches;
     //특징점 개수 1000개 제한
-    static Ptr<ORB> detector = ORB::create(1000);
+    static Ptr<ORB> detector = ORB::create(500);
     static Ptr<BFMatcher> matcher = BFMatcher::create(NORM_HAMMING);
     {
         timer t("cvFeature: FAST & BRIEF (prev)");
@@ -43,6 +42,82 @@ struct orbData cvORB(const Mat& prev, const Mat& next)
 
     return orbData{std::move(prevKeypoints), std::move(nextKeypoints), std::move(matches)};
 }
+ struct orbData LocalORB(const Mat& prev, const Mat& next, const vector<vector<CoreTypes::coord>>& maskingCords)
+{
+    timer k("cvFeature: LocalORB method");
+    vector<KeyPoint> prevKeypoints, nextKeypoints;
+    Mat prevDesc, nextDesc;
+    vector<vector<DMatch>> matches;
+
+    static Ptr<ORB> detector = ORB::create(500);
+    static Ptr<BFMatcher> matcher = BFMatcher::create(NORM_HAMMING);
+
+    Mat prevGray, nextGray;
+    if (prev.channels() == 3) cvtColor(prev, prevGray, COLOR_BGR2GRAY);
+    else prevGray = prev;
+
+    if (next.channels() == 3) cvtColor(next, nextGray, COLOR_BGR2GRAY);
+    else nextGray = next;
+
+    int min_x = prev.cols, min_y = prev.rows, max_x = 0, max_y = 0;
+    bool has_cords = false;
+
+    for (const auto& box : maskingCords) {
+        for (const auto& pt : box) {
+            min_x = std::min(min_x, pt.x);
+            min_y = std::min(min_y, pt.y);
+            max_x = std::max(max_x, pt.x);
+            max_y = std::max(max_y, pt.y);
+            has_cords = true;
+        }
+    }
+
+    Rect prevRoi(0, 0, prev.cols, prev.rows);
+    Rect nextRoi(0, 0, next.cols, next.rows);
+
+    if (has_cords && min_x < max_x && min_y < max_y) {
+        int x1 = std::max(0, min_x);
+        int y1 = std::max(0, min_y);
+        int x2 = std::min(prev.cols, max_x);
+        int y2 = std::min(prev.rows, max_y);
+        prevRoi = Rect(Point(x1, y1), Point(x2, y2));
+        //로컬 특징점 탐색에서 다음 프레임의 ROI에 패딩을 주어 정확도를 높임
+        int pad = 50;
+        int nx1 = std::max(0, min_x - pad);
+        int ny1 = std::max(0, min_y - pad);
+        int nx2 = std::min(next.cols, max_x + pad);
+        int ny2 = std::min(next.rows, max_y + pad);
+        nextRoi = Rect(Point(nx1, ny1), Point(nx2, ny2));
+    }
+
+    Mat prevCropped = prevGray(prevRoi);
+    Mat nextCropped = nextGray(nextRoi);
+
+    //maskingCords로 마스크 데이터만 다각화
+    {
+        timer t("cvFeature: FAST & BRIEF (prev - masked)");
+        detector->detectAndCompute(prevCropped, noArray(), prevKeypoints, prevDesc);
+        for (auto& kp : prevKeypoints) {
+            kp.pt.x += prevRoi.x;
+            kp.pt.y += prevRoi.y;
+        }
+    }
+    {
+        timer t("cvFeature: FAST & BRIEF (next)");
+        detector->detectAndCompute(nextCropped, noArray(), nextKeypoints, nextDesc);
+        for (auto& kp : nextKeypoints) {
+            kp.pt.x += nextRoi.x;
+            kp.pt.y += nextRoi.y;
+        }
+    }
+    if (!prevDesc.empty() && !nextDesc.empty() && prevDesc.rows >= 2 && nextDesc.rows >= 2)
+    {
+        timer t("cvFeature: cvORB method(knnMatch operation)");
+        matcher->knnMatch(prevDesc, nextDesc, matches, 2);
+    }
+
+    return orbData{std::move(prevKeypoints), std::move(nextKeypoints), std::move(matches)};
+} 
 
 struct cvHomographyResult cvHomography(const orbData& data, double ratio)
 {
@@ -80,5 +155,30 @@ struct cvHomographyResult cvHomography(const orbData& data, double ratio)
     }
 
     return cvHomographyResult{H, prevKeypoints, nextKeypoints, acceptMatch};
+}
+static Mat createCvMask(const Size& imgSize, const vector<vector<CoreTypes::coord>>& maskingCords)
+{
+    if (maskingCords.empty()) {
+        return Mat();
+    }
+
+    Mat mask = Mat::zeros(imgSize, CV_8UC1);
+
+    for (const auto& box : maskingCords) {
+        if (box.size() < 4) continue;
+        // ul, ur, dr, dl 순서로 다각형 점 구성
+        vector<Point> poly = {
+            Point(box[0].x, box[0].y), // ul
+            Point(box[1].x, box[1].y), // ur
+            Point(box[3].x, box[3].y), // dr
+            Point(box[2].x, box[2].y)  // dl
+        };
+
+        const Point* pts = poly.data();
+        int npts = 4;
+        fillPoly(mask, &pts, &npts, 1, Scalar(255));
+    }
+
+    return mask;
 }
 }

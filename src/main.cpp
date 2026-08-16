@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <cstdio>
 #include <cstdint>
+#include <cmath>
 #include <algorithm>
 #include <opencv2/opencv.hpp>
 #include <vector>
@@ -43,12 +44,13 @@ bool compareNatural(const fs::path& a, const fs::path& b) {
     return sa < sb;
 }
 
-void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pairIdx) {
+vector<vector<CoreTypes::coord>> instance(const FramePair& firstFrame, const FramePair& secondFrame, int pairIdx, const vector<vector<CoreTypes::coord>>& currentCoords) {
     struct CoreTypes::ImgSize fimgSize = {0, 0}, simgSize = {0, 0};
     uint8_t *fmaskedData = nullptr, *smaskedData = nullptr, *smaskedDataCV = nullptr;
     uint8_t* final_smaskedData = nullptr;
     Mat comp_result, secondCV;
     vector<vector<CoreTypes::coord>> homographyCords, homographyCordsCV;
+    vector<vector<CoreTypes::coord>> nextTrackedCoords;
     string chosen_h_name = "Hcv";
     double diff_threshold = 1e-3;
     double error = 0.0;
@@ -69,6 +71,10 @@ void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pai
         
         //마스킹 좌표 설정, 마스크 데이터 생성
         auto maskingCoord = Operator::loadcord(firstFrame.boxPath);
+        if (maskingCoord.empty()) {
+            maskingCoord = currentCoords;
+        }
+
         auto maskData = Operator::makeQuadMask(fimgSize, maskingCoord);
 
         //마스킹 수행
@@ -82,15 +88,16 @@ void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pai
         //호모그래피 행렬을 마스킹 좌표에 적용
         homographyCords = Operator::homography(H, maskingCoord);
 
-        //변환된 좌표를 이용하여 두 번째 이미지에 마스킹 적용    
+        //변환된 좌표를 이용하여 두 번째 이미지에 마스킹 적용
         auto smaskData = Operator::makeQuadMask(simgSize, homographyCords);
         smaskedData = Operator::masking(simgData, smaskData, simgSize);
+
         //------------------------OPENCV------------------------
         //OpenCV로 이미지 로드
         auto firstCV = Operator::LoadCV(firstFrame.imgPath.c_str());
         secondCV = Operator::LoadCV(secondFrame.imgPath.c_str());
         //ORB 특징점 검출 및 매칭
-        auto orbResult = Operator::cvORB(firstCV, secondCV);
+        auto orbResult = Operator::LocalORB(firstCV, secondCV, maskingCoord);
 
         auto HcvResult = Operator::cvHomography(orbResult, 0.75);
 
@@ -115,7 +122,6 @@ void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pai
         //호모그래피 행렬을 마스킹 좌표에 적용
         homographyCordsCV = Operator::homography(HcvM, maskingCoord);
 
-        //변환된 좌표를 이용하여 두 번째 이미지에 마스킹 적용    
         auto smaskDataCV = Operator::makeQuadMask(simgSize, homographyCordsCV);
         smaskedDataCV = Operator::masking(simgData, smaskDataCV, simgSize);
 
@@ -163,33 +169,60 @@ void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pai
         }
         //카메라 파라미터 호모그래피의 역행렬을 구하고 전체 호모그래피와 곱하여 객체의 움직임 호모그래피를 분리함
         Mat Hcam_inv;
-        auto flag = invert(Hcam, Hcam_inv, DECOMP_LU);
-        if (flag) {
-            g_logger.log(LogLevel::DEBUG, "Inversion successful.");
-        } 
-        else {
-            g_logger.log(LogLevel::ERR, "Inversion failed.");
-        }
-        Mat Hobj = Hcam_inv * Hcv;
-        //Hobj가 단위 행렬에 가까운지 확인하여 어느 호모그래피가 더 정확한지 판단
-        Mat I = Mat::eye(Hobj.rows, Hobj.cols, CV_64FC1);
-        Mat Idiff;
-        absdiff(Hobj, I, Idiff);
-        error = sum(Idiff)[0];
-        
-        //error가 threshold보다 작으면 Hcam이 더 정확하다고 판단하여 Hcam으로 워핑한 이미지를 결과로 사용, 
-        //그렇지 않으면 Hcv로 워핑한 이미지를 결과로 사용
-        comp_result = (error < diff_threshold) ? firstWarp_Hcam_resized : firstWarp_Hcv_resized;
-        g_logger.log(LogLevel::DEBUG, "chosen homography: " + string((error < diff_threshold) ? "Hcam" : "Hcv"));
+        error = 1.0;
+        if (!Hcam.empty() && Hcam.rows == 3 && Hcam.cols == 3 &&
+            !Hcv.empty() && Hcv.rows == 3 && Hcv.cols == 3) {
+            if (Hcam.type() != CV_64FC1) Hcam.convertTo(Hcam, CV_64FC1);
+            if (Hcv.type() != CV_64FC1) Hcv.convertTo(Hcv, CV_64FC1);
 
-        rmse_val = Spec::rmse(comp_result, secondCV);
+            auto flag = invert(Hcam, Hcam_inv, DECOMP_LU);
+            if (flag) {
+                g_logger.log(LogLevel::DEBUG, "Inversion successful.");
+                Mat Hobj = Hcam_inv * Hcv;
+                //Hobj가 단위 행렬에 가까운지 확인하여 어느 호모그래피가 더 정확한지 판단
+                Mat I = Mat::eye(Hobj.rows, Hobj.cols, CV_64FC1);
+                Mat Idiff;
+                absdiff(Hobj, I, Idiff);
+                error = sum(Idiff)[0];
+            } else {
+                g_logger.log(LogLevel::ERR, "Inversion failed.");
+            }
+        }
+        
+        // Hcv 변환 좌표 면적 90% 초과 검사
+        auto isAreaOverRatio = [](const vector<vector<CoreTypes::coord>>& boxes, int img_w, int img_h, double ratio_limit) {
+            double total_area = 0.0;
+            for (const auto& box : boxes) {
+                if (box.size() < 4) continue;
+                vector<Point2f> pts;
+                for (const auto& pt : box) {
+                    pts.emplace_back(static_cast<float>(pt.x), static_cast<float>(pt.y));
+                }
+                total_area += contourArea(pts);
+            }
+            double img_total_area = static_cast<double>(img_w) * img_h;
+            return (total_area >= img_total_area * ratio_limit);
+        };
+
+        bool cv_area_exploded = isAreaOverRatio(homographyCordsCV, simgSize.width, simgSize.height, 0.9);
+
         iou_val = Spec::iou(homographyCords, homographyCordsCV);
 
+        bool select_hcam = !hcv_valid || (iou_val < 0.5) || cv_area_exploded;
+        if (!select_hcam) {
+            select_hcam = (error < diff_threshold);
+        }
+
+        comp_result = select_hcam ? firstWarp_Hcam_resized : firstWarp_Hcv_resized;
+        chosen_h_name = select_hcam ? "Hcam" : "Hcv";
+        final_smaskedData = select_hcam ? smaskedData : smaskedDataCV;
+        nextTrackedCoords = select_hcam ? homographyCords : homographyCordsCV;
+
+        rmse_val = Spec::rmse(comp_result, secondCV);
+
+        g_logger.log(LogLevel::DEBUG, "chosen homography: " + chosen_h_name);
         g_logger.log(LogLevel::DEBUG, "RMSE between images: " + to_string(rmse_val));
         g_logger.log(LogLevel::DEBUG, "IOU between masks: " + to_string(iou_val));
-
-        final_smaskedData = (error < diff_threshold) ? smaskedData : smaskedDataCV;
-        chosen_h_name = (error < diff_threshold) ? "Hcam" : "Hcv";
 
         if (final_smaskedData != nullptr && simgSize.width > 0 && simgSize.height > 0) {
             Mat outResultCam = Mat(simgSize.height, simgSize.width, CV_8UC3, final_smaskedData).clone();
@@ -201,7 +234,7 @@ void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pai
 
     // ----------------- Image processing-----------------
     if (!fmaskedData || !final_smaskedData || fimgSize.width <= 0 || simgSize.width <= 0) {
-        return;
+        return nextTrackedCoords;
     }
 
     Mat fMaskedMat = Mat(fimgSize.height, fimgSize.width, CV_8UC3, fmaskedData).clone();
@@ -245,6 +278,8 @@ void instance(const FramePair& firstFrame, const FramePair& secondFrame, int pai
     fs::create_directories("output/resultimages");
     string outName = "output/resultimages/summary_" + firstFrame.stemName + "_" + secondFrame.stemName + ".jpg";
     imwrite(outName, canvas);
+
+    return nextTrackedCoords;
 }
 
 int main() {
@@ -279,9 +314,10 @@ int main() {
 
     int total_pairs = static_cast<int>(frames.size()) - 1;
 
+    vector<vector<CoreTypes::coord>> trackedCoords;
     for (int i = 0; i < total_pairs; ++i) {
         g_logger.log(LogLevel::INFO, "processing frame : " + frames[i].stemName + " -> " + frames[i + 1].stemName);        
-        instance(frames[i], frames[i + 1], i + 1);
+        trackedCoords = instance(frames[i], frames[i + 1], i + 1, trackedCoords);
     }
 
     return 0;
