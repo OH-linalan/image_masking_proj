@@ -1,0 +1,10 @@
+{
+  "name": "opencv-masking-project",
+  "version-string": "1.0.0",
+  "dependencies": [
+  {
+    "name": "opencv4",
+    "features": [ "contrib" ]
+  }
+]
+}
