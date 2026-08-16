@@ -80,7 +80,6 @@ struct orbData LocalORB(const Mat& prev, const Mat& next, const vector<vector<Co
     Rect nextRoi(0, 0, next.cols, next.rows);
 
     if (has_cords && min_x < max_x && min_y < max_y) {
-        // prevRoi: 이전 프레임 ROI 안전 계산
         int x1 = (std::max)(0, min_x);
         int y1 = (std::max)(0, min_y);
         int x2 = (std::min)(prev.cols, max_x);
@@ -91,8 +90,6 @@ struct orbData LocalORB(const Mat& prev, const Mat& next, const vector<vector<Co
         if (w1 > 0 && h1 > 0) {
             prevRoi = Rect(x1, y1, w1, h1);
         }
-
-        // nextRoi: 다음 프레임 패딩 ROI 안전 계산
         int pad = 50;
         int nx1 = (std::max)(0, min_x - pad);
         int ny1 = (std::max)(0, min_y - pad);
