@@ -1,4 +1,6 @@
 #include "operator/cvFeature.hpp"
+#include <iostream>
+#include <algorithm>
 
 namespace Operator
 {
@@ -8,18 +10,19 @@ Mat LoadCV(const string filename)
     Mat img = imread(filename);
     if (img.empty())
     {
-        std::cout << "Can't find image: " << filename << std::endl;
+        cout << "Can't find image: " << filename << endl;
         return Mat();
     }
     return img;
 }
+
 struct orbData cvORB(const Mat& prev, const Mat& next)
 {
     timer k("cvFeature: cvORB method");
     vector<KeyPoint> prevKeypoints, nextKeypoints;
     Mat prevDesc, nextDesc;
     vector<vector<DMatch>> matches;
-    //특징점 개수 1000개 제한
+    //특징점 개수 500개 제한
     static Ptr<ORB> detector = ORB::create(500);
     static Ptr<BFMatcher> matcher = BFMatcher::create(NORM_HAMMING);
     {
@@ -40,9 +43,10 @@ struct orbData cvORB(const Mat& prev, const Mat& next)
         matcher->knnMatch(prevDesc, nextDesc, matches, 2);
     }
 
-    return orbData{std::move(prevKeypoints), std::move(nextKeypoints), std::move(matches)};
+    return orbData{move(prevKeypoints), move(nextKeypoints), move(matches)};
 }
- struct orbData LocalORB(const Mat& prev, const Mat& next, const vector<vector<CoreTypes::coord>>& maskingCords)
+
+struct orbData LocalORB(const Mat& prev, const Mat& next, const vector<vector<CoreTypes::coord>>& maskingCords)
 {
     timer k("cvFeature: LocalORB method");
     vector<KeyPoint> prevKeypoints, nextKeypoints;
@@ -64,10 +68,10 @@ struct orbData cvORB(const Mat& prev, const Mat& next)
 
     for (const auto& box : maskingCords) {
         for (const auto& pt : box) {
-            min_x = std::min(min_x, pt.x);
-            min_y = std::min(min_y, pt.y);
-            max_x = std::max(max_x, pt.x);
-            max_y = std::max(max_y, pt.y);
+            min_x = (std::min)(min_x, pt.x);
+            min_y = (std::min)(min_y, pt.y);
+            max_x = (std::max)(max_x, pt.x);
+            max_y = (std::max)(max_y, pt.y);
             has_cords = true;
         }
     }
@@ -76,18 +80,30 @@ struct orbData cvORB(const Mat& prev, const Mat& next)
     Rect nextRoi(0, 0, next.cols, next.rows);
 
     if (has_cords && min_x < max_x && min_y < max_y) {
-        int x1 = std::max(0, min_x);
-        int y1 = std::max(0, min_y);
-        int x2 = std::min(prev.cols, max_x);
-        int y2 = std::min(prev.rows, max_y);
-        prevRoi = Rect(Point(x1, y1), Point(x2, y2));
-        //로컬 특징점 탐색에서 다음 프레임의 ROI에 패딩을 주어 정확도를 높임
+        // prevRoi: 이전 프레임 ROI 안전 계산
+        int x1 = (std::max)(0, min_x);
+        int y1 = (std::max)(0, min_y);
+        int x2 = (std::min)(prev.cols, max_x);
+        int y2 = (std::min)(prev.rows, max_y);
+        int w1 = (std::max)(0, x2 - x1);
+        int h1 = (std::max)(0, y2 - y1);
+
+        if (w1 > 0 && h1 > 0) {
+            prevRoi = Rect(x1, y1, w1, h1);
+        }
+
+        // nextRoi: 다음 프레임 패딩 ROI 안전 계산
         int pad = 50;
-        int nx1 = std::max(0, min_x - pad);
-        int ny1 = std::max(0, min_y - pad);
-        int nx2 = std::min(next.cols, max_x + pad);
-        int ny2 = std::min(next.rows, max_y + pad);
-        nextRoi = Rect(Point(nx1, ny1), Point(nx2, ny2));
+        int nx1 = (std::max)(0, min_x - pad);
+        int ny1 = (std::max)(0, min_y - pad);
+        int nx2 = (std::min)(next.cols, max_x + pad);
+        int ny2 = (std::min)(next.rows, max_y + pad);
+        int nw = (std::max)(0, nx2 - nx1);
+        int nh = (std::max)(0, ny2 - ny1);
+
+        if (nw > 0 && nh > 0) {
+            nextRoi = Rect(nx1, ny1, nw, nh);
+        }
     }
 
     Mat prevCropped = prevGray(prevRoi);
@@ -116,7 +132,7 @@ struct orbData cvORB(const Mat& prev, const Mat& next)
         matcher->knnMatch(prevDesc, nextDesc, matches, 2);
     }
 
-    return orbData{std::move(prevKeypoints), std::move(nextKeypoints), std::move(matches)};
+    return orbData{move(prevKeypoints), move(nextKeypoints), move(matches)};
 } 
 
 struct cvHomographyResult cvHomography(const orbData& data, double ratio)
@@ -138,8 +154,12 @@ struct cvHomographyResult cvHomography(const orbData& data, double ratio)
     vector<Point2f> prevKeypoints, nextKeypoints;
     for (const auto& m : acceptMatch)
     {
-        prevKeypoints.push_back(data.prevKeypoint[m.queryIdx].pt);
-        nextKeypoints.push_back(data.nextKeypoint[m.trainIdx].pt);
+        if (m.queryIdx >= 0 && static_cast<size_t>(m.queryIdx) < data.prevKeypoint.size() &&
+            m.trainIdx >= 0 && static_cast<size_t>(m.trainIdx) < data.nextKeypoint.size())
+        {
+            prevKeypoints.push_back(data.prevKeypoint[m.queryIdx].pt);
+            nextKeypoints.push_back(data.nextKeypoint[m.trainIdx].pt);
+        }
     }
 
     Mat H;
@@ -150,13 +170,14 @@ struct cvHomographyResult cvHomography(const orbData& data, double ratio)
     }
     else
     {
-        std::cout << "[WARN] Not enough matches for Homography: " << prevKeypoints.size() << std::endl;
+        cout << "[WARN] Not enough matches for Homography: " << prevKeypoints.size() << endl;
         H = Mat::eye(3, 3, CV_64FC1);
     }
 
     return cvHomographyResult{H, prevKeypoints, nextKeypoints, acceptMatch};
 }
-static Mat createCvMask(const Size& imgSize, const vector<vector<CoreTypes::coord>>& maskingCords)
+
+Mat createCvMask(const Size& imgSize, const vector<vector<CoreTypes::coord>>& maskingCords)
 {
     if (maskingCords.empty()) {
         return Mat();
