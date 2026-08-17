@@ -43,7 +43,7 @@ public:
         : m_minLevel(level)
     {
         if (!filename.empty()) {
-            m_fileStream.open(filename, ios::out | ios::app);
+            m_fileStream.open(filename, ios::out | ios::trunc);
         }
     }
 
@@ -57,13 +57,9 @@ public:
     void log(LogLevel level, const string& message) {
         if (level < m_minLevel) return;
 
-        string logMsg = "[" + getCurrentTime() + "] [" + levelToString(level) + "] " + message + "\n";
-
-        cout << logMsg;
-
         if (m_fileStream.is_open()) {
+            string logMsg = "[" + getCurrentTime() + "] [" + levelToString(level) + "] " + message + "\n";
             m_fileStream << logMsg;
-            m_fileStream.flush();
         }
     }
 };
