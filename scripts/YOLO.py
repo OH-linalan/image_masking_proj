@@ -13,6 +13,18 @@ def natural_sort_key(file_path: Path):
 
 
 def batch_detect_and_save_boxes():
+    # 사용자로부터 프레임 간격 입력 받기
+    while True:
+        try:
+            interval_input = input("바운딩 박스 생성 간격을 입력하세요 (0: 모든 프레임, N: N프레임 단위): ")
+            interval = int(interval_input.strip())
+            if interval < 0:
+                print("0 이상의 정수를 입력해주세요.")
+                continue
+            break
+        except ValueError:
+            print("올바른 숫자를 입력해주세요.")
+
     # 기준 경로 설정 (현재 스크립트 기준 상위 디렉터리)
     base_dir = Path(__file__).resolve().parent.parent
 
@@ -30,12 +42,16 @@ def batch_detect_and_save_boxes():
         print(f"경고: {scene_dir} 에서 .bmp 파일을 찾을 수 없습니다.")
         return
 
-    print(f"총 {len(image_files)}장의 이미지를 처리합니다.")
+    print(f"총 {len(image_files)}장의 이미지를 처리합니다. (설정 간격: {'모든 프레임' if interval == 0 else f'{interval}프레임 단위'})")
 
     # YOLO 모델 로드
     model = YOLO("yolo11x.pt")
 
     for idx, img_path in enumerate(image_files, 1):
+        # 0이 아닐 때 지정된 간격(1, 1+N, 1+2N, ...)이 아니면 건너뜀
+        if interval > 0 and (idx - 1) % interval != 0:
+            continue
+
         print(f"[{idx}/{len(image_files)}] 검출 중: {img_path.name}")
 
         # YOLO 추론 (conf=0.25, 로그 출력 최소화)
